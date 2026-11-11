@@ -113,9 +113,21 @@ final class DesktopClient {
         }
         let task = Process()
         let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        task.arguments = ["python3", "-u", backend.path]
         var environment = ProcessInfo.processInfo.environment
+        #if arch(arm64)
+        let architecture = "arm64"
+        #else
+        let architecture = "x86_64"
+        #endif
+        let bundledPython = Bundle.main.resourceURL?.appendingPathComponent("python/\(architecture)/bin/python3")
+        if let bundledPython, FileManager.default.isExecutableFile(atPath: bundledPython.path) {
+            task.executableURL = bundledPython
+            task.arguments = ["-u", backend.path]
+            environment.removeValue(forKey: "PYTHONHOME")
+        } else {
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            task.arguments = ["python3", "-u", backend.path]
+        }
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin")
         environment["PHONE_DESKTOP_TOKEN"] = token
         environment["PYTHONDONTWRITEBYTECODE"] = "1"

@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>手机 Agent 控制台</title>
+  <link rel="stylesheet" href="/console.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="shell bar-inner">
+      <a href="/" class="brand"><span class="mark" aria-hidden="true"></span> 手机 Agent</a>
+      <nav aria-label="控制台"><a href="/" aria-current="page">运行任务</a><a href="/triggers">触发器</a></nav>
+    </div>
+  </header>
+  <main class="shell">
+    <div class="page-heading"><h1>任务控制台</h1></div>
+    <section class="device" aria-label="当前设备">
+      <div class="device-left">
+        <div class="device-icon" aria-hidden="true"><span class="phone"></span></div>
+        <div><h2 id="device-name">iPhone</h2><p id="device-details">正在检查 WDA</p></div>
+      </div>
+      <div class="device-right">
+        <span class="pill" id="device-state" data-state="idle">检查中</span>
+        <button type="button" class="quiet" id="refresh">刷新状态</button>
+      </div>
+    </section>
+    <div class="workspace">
+      <section class="card task-card" aria-labelledby="task-title">
+        <h2 id="task-title">启动任务</h2>
+        <fieldset class="task-choice">
+          <legend>选择任务</legend>
+          <label><input type="radio" name="task" value="once" checked><span>单次任务</span></label>
+          <label><input type="radio" name="task" value="watch"><span>微信值守</span></label>
+        </fieldset>
+        <form id="task-form">
+          <div id="watch-fields" class="fields" hidden>
+            <label>执行版本
+              <select id="watch-mode"><option value="terra">Terra · OCR</option><option value="decisions">Decisions · OCR</option></select>
+            </label>
+            <label>知识库文件
+              <input id="knowledge" placeholder="Mac 上的 JSON 文件路径" autocomplete="off">
+            </label>
+            <label>监控会话 <small>选填</small>
+              <textarea id="contacts" rows="2" placeholder="每行一个会话名，留空监控当前可见会话"></textarea>
+            </label>
+            <details id="watch-send">
+              <summary>设置实发会话</summary>
+              <label>实发会话名
+                <input id="recipient" placeholder="仅向这个会话实发" autocomplete="off">
+              </label>
+            </details>
+          </div>
+          <div id="once-fields" class="fields">
+            <label>任务模板
+              <select id="once-template"><option value="custom">自定义任务</option><option value="sms">短信名单</option></select>
+            </label>
+            <label id="goal-row">任务说明
+              <textarea id="goal" rows="4" required placeholder="例如：打开「设置」，读取 iOS 版本并返回结果"></textarea>
+            </label>
+          </div>
+          <div id="sms-fields" class="fields" hidden>
+            <label>执行方式
+              <select id="sms-mode"><option value="preview">查看名单进度</option><option value="draft">准备下一条草稿</option><option value="send">向名单发送短信</option></select>
+            </label>
+            <label>短信名单
+              <input id="csv" placeholder="Mac 上的 CSV 文件路径" autocomplete="off">
+            </label>
+          </div>
+          <label id="confirm-row" class="confirm" hidden><input id="confirm" type="checkbox"><span id="confirm-copy"></span></label>
+          <div class="form-footer">
+            <button type="submit" class="primary" id="run-task"><span aria-hidden="true" class="play"></span>启动任务</button>
+            <p class="muted" id="mode-help"></p>
+          </div>
+          <p id="form-error" role="alert" hidden></p>
+        </form>
+      </section>
+      <section class="card activity" aria-labelledby="activity-title">
+        <div class="activity-header">
+          <h2 id="activity-title">运行记录</h2>
+          <span id="run-state" class="pill" data-state="idle" role="status">空闲</span>
+        </div>
+        <div class="run-summary">
+          <div><p id="run-name">暂无运行记录</p><p id="run-started" class="muted" hidden></p></div>
+          <button type="button" id="stop" class="quiet" hidden>停止任务</button>
+        </div>
+        <div class="terminal" aria-label="任务输出">
+          <div class="terminal-title"><span class="terminal-prompt" aria-hidden="true">›_</span> 任务日志</div>
+          <pre id="logs" tabindex="0">启动任务后，日志会显示在这里。</pre>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let active = false, submitting = false, stopping = false;
+
+    async function request(path, payload) {
+      const options = payload === undefined ? {} : {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)
+      };
+      const response = await fetch(path, options);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "请求失败");
+      return result;
+    }
+
+    function badge(id, state, label) {
+      $(id).dataset.state = state;
+      if ($(id).textContent !== label) $(id).textContent = label;
+    }
+
+    async function refreshDevice() {
+      $("refresh").disabled = true;
+      try {
+        const device = await request("/api/device");
+        $("device-name").textContent = device.name;
+        $("device-details").textContent = "WDA " + device.port + " · " + (device.model_key ? "模型密钥已配置" : "模型密钥未配置");
+        badge("device-state", device.ready ? "ok" : "warn", device.ready ? "WDA 就绪" : "WDA 未就绪");
+      } catch {
+        badge("device-state", "warn", "状态读取失败");
+      } finally { $("refresh").disabled = false; }
+    }
+
+    function taskData() {
+      const task = document.querySelector('input[name="task"]:checked').value;
+      const confirmed = $("confirm").checked;
+      if (task === "watch") return {task, mode: $("watch-mode").value, path: $("knowledge").value,
+        contacts: $("contacts").value, recipient: $("watch-send").open ? $("recipient").value.trim() : "", confirmed};
+      const template = $("once-template").value;
+      return template === "sms" ? {task, template, mode: $("sms-mode").value, path: $("csv").value, confirmed}
+        : {task, template, goal: $("goal").value};
+    }
+
+    function updateForm() {
+      const data = taskData();
+      const watch = data.task === "watch";
+      const sms = data.template === "sms";
+      const custom = data.template === "custom";
+      const sends = watch ? Boolean(data.recipient) : sms && data.mode === "send";
+      $("watch-fields").hidden = !watch;
+      $("once-fields").hidden = watch;
+      $("goal-row").hidden = !custom;
+      $("sms-fields").hidden = !sms;
+      $("knowledge").required = watch;
+      $("goal").required = custom;
+      $("csv").required = sms;
+      $("confirm-row").hidden = !sends;
+      $("confirm").required = sends;
+      $("confirm-copy").textContent = watch ? "确认只向「" + data.recipient + "」实发" : "确认向 CSV 名单中尚未处理的号码发送";
+      $("mode-help").textContent = watch ? (sends ? "其他会话只留草稿" : "默认只留草稿") : custom ? "" : {
+        preview: "只读取 Mac 上的名单和进度", draft: "在手机上准备一条草稿", send: "执行短信实发"
+      }[data.mode];
+      $("run-task").disabled = submitting || active;
+    }
+
+    function feedback(text = "") {
+      $("form-error").textContent = text;
+      $("form-error").hidden = !text;
+    }
+
+    async function refreshRun() {
+      const {run} = await request("/api/run");
+      active = run !== null && run.exit_code === null;
+      const state = !run ? ["idle", "空闲"] : active
+        ? (run.stopping ? ["warn", "停止中"] : ["ok", "运行中"])
+        : (run.stopping ? ["idle", "已停止"] : run.exit_code === 0 ? ["ok", "已结束"] : ["warn", "执行失败"]);
+      badge("run-state", ...state);
+      $("run-name").textContent = run?.title ?? "暂无运行记录";
+      $("run-started").hidden = !run;
+      if (run) $("run-started").textContent = "开始于 " + run.started.replace("T", " ");
+      $("stop").hidden = !active;
+      $("stop").disabled = stopping || Boolean(run?.stopping);
+      const logs = $("logs");
+      const output = run?.logs.join("\n") || (active ? "等待任务输出…" : "启动任务后，日志会显示在这里。");
+      if (logs.textContent !== output) {
+        const follow = logs.scrollHeight - logs.scrollTop - logs.clientHeight < 28;
+        logs.textContent = output;
+        if (follow) logs.scrollTop = logs.scrollHeight;
+      }
+      updateForm();
+    }
+
+    function configurationChanged() {
+      $("confirm").checked = false;
+      updateForm();
+    }
+
+    document.querySelectorAll('input[name="task"], #once-template, #watch-mode, #sms-mode').forEach((field) => {
+      field.onchange = () => { feedback(); configurationChanged(); };
+    });
+    $("recipient").oninput = configurationChanged;
+    $("csv").oninput = configurationChanged;
+    $("watch-send").ontoggle = configurationChanged;
+    $("refresh").onclick = refreshDevice;
+    $("task-form").onsubmit = async (event) => {
+      event.preventDefault();
+      submitting = true;
+      feedback();
+      updateForm();
+      try {
+        await request("/api/run", taskData());
+        await refreshRun();
+      } catch (error) { feedback(error.message); }
+      finally { submitting = false; configurationChanged(); }
+    };
+    $("stop").onclick = async () => {
+      stopping = true;
+      $("stop").disabled = true;
+      try {
+        await request("/api/run/stop", {});
+        await refreshRun();
+      } catch (error) { feedback(error.message); }
+      finally { stopping = false; }
+    };
+    updateForm();
+    refreshDevice();
+    async function monitorRun() {
+      try { await refreshRun(); }
+      catch { badge("run-state", "warn", "控制台连接中断"); }
+      setTimeout(monitorRun, 1500);
+    }
+    monitorRun();
+  </script>
+</body>
+</html>

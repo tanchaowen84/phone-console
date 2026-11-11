@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>触发器 · 手机 Agent</title>
+  <link rel="stylesheet" href="/console.css">
+  <style>
+    :root { color-scheme: light; font-family: Inter, "PingFang SC", system-ui, sans-serif; color: #191f23; background: #f3f5f4; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    .wrap { padding-bottom: 28px; }
+    .top, .line, .actions, .rule { display: flex; align-items: center; gap: 12px; }
+    .top, .line, .rule { justify-content: space-between; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 26px; letter-spacing: -.03em; }
+    h2 { font-size: 18px; }
+    p, small { color: #52615c; line-height: 1.55; }
+    main { display: grid; grid-template-columns: minmax(250px, .9fr) minmax(0, 1.55fr); align-items: start; gap: 22px; }
+    section { border: 1px solid #dbe1de; border-radius: 14px; background: #fff; padding: 20px; min-width: 0; }
+    #rules { margin-top: 16px; }
+    .rule { padding: 13px 0; border-top: 1px solid #e8edea; }
+    .rule-name { text-align: left; background: transparent; border: 0; padding: 0; overflow-wrap: anywhere; }
+    .rule-name[aria-current="true"] { color: #08705a; }
+    .rule small { display: block; margin-top: 3px; }
+    .state { font-size: 12px; white-space: nowrap; color: #52615c; }
+    .state[data-enabled="true"] { color: #08705a; }
+    form { display: grid; gap: 15px; margin-top: 18px; }
+    label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
+    input, select, button { font: inherit; }
+    input, select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid #c9d2cd; border-radius: 7px; background: #fff; color: inherit; }
+    input[readonly] { background: #f3f5f4; }
+    button { cursor: pointer; border: 1px solid #c9d2cd; border-radius: 7px; padding: 8px 12px; font-size: 14px; font-weight: 600; background: #fff; color: inherit; white-space: nowrap; }
+    button.primary { color: white; background: #116650; border-color: #116650; }
+    button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #137a62; outline-offset: 2px; }
+    button:disabled { cursor: wait; opacity: .6; }
+    hr { margin: 4px 0; border: 0; border-top: 1px solid #e8edea; }
+    #event-info { display: grid; gap: 9px; border-top: 1px solid #e8edea; margin-top: 18px; padding-top: 14px; }
+    #event-url { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
+    #message { min-height: 1.5em; font-size: 14px; }
+    #message[data-error="true"] { color: #9c272d; }
+    [hidden] { display: none !important; }
+    @media (max-width: 720px) { main { grid-template-columns: minmax(0, 1fr); } }
+  </style>
+</head>
+<body>
+  <header class="bar">
+    <div class="shell bar-inner">
+      <a href="/" class="brand"><span class="mark" aria-hidden="true"></span> 手机 Agent</a>
+      <nav aria-label="控制台"><a href="/">运行任务</a><a href="/triggers" aria-current="page">触发器</a></nav>
+    </div>
+  </header>
+  <div class="shell"><div class="page-heading top"><h1>触发器</h1><button type="button" id="new-rule">新建规则</button></div></div>
+  <main class="shell wrap">
+    <section aria-labelledby="list-title">
+      <h2 id="list-title">已保存规则</h2>
+      <div id="rules"><p>正在读取规则…</p></div>
+    </section>
+    <section aria-labelledby="editor-title">
+      <div class="line"><h2 id="editor-title">新建规则</h2><span class="state" id="editor-state">未保存</span></div>
+      <form id="editor">
+        <label>规则名称<input id="rule-name" required maxlength="64" pattern="[A-Za-z0-9_\-]+" placeholder="例如 daily-check"></label>
+        <label>触发条件
+          <select id="condition">
+            <option value="webhook">快捷指令或脚本发来事件</option>
+            <option value="message">收到指定号码的苹果信息</option>
+            <option value="daily">每天指定时间</option>
+          </select>
+        </label>
+        <label id="condition-field" hidden><span id="condition-label"></span><input id="condition-value"></label>
+        <hr>
+        <label>触发后执行
+          <select id="action">
+            <option value="app_snapshot">打开 App 并记录可见文字</option>
+            <option value="messages_preview">核对苹果信息会话</option>
+            <option value="sms_draft">准备名单里的下一条短信草稿</option>
+          </select>
+        </label>
+        <label><span id="task-label"></span><input id="task-value" required></label>
+        <div class="actions"><button type="submit" class="primary" id="save">保存规则</button><p id="message" role="status"></p></div>
+      </form>
+      <div id="event-info" hidden>
+        <label>事件地址<input id="event-url" readonly></label>
+        <small id="event-help"></small>
+        <div class="actions"><button type="button" id="copy-url">复制地址</button><button type="button" id="copy-token">复制访问令牌</button></div>
+      </div>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const conditions = {webhook: "外部事件", message: "苹果信息", daily: "每天定时"};
+    const tasks = {
+      app_snapshot: ["App Bundle ID", "bundle_id", "com.apple.Preferences"],
+      messages_preview: ["会话对方手机号", "sender", "+12025550147"],
+      sms_draft: ["CSV 文件路径", "csv", "/Users/your-name/list.csv"]
+    };
+    let rules = [], editing = null, eventBase = "";
+    const editor = $("editor");
+
+    async function request(path, method = "GET", data) {
+      const options = {method};
+      if (data !== undefined) {
+        options.headers = {"Content-Type": "application/json"};
+        options.body = JSON.stringify(data);
+      }
+      const response = await fetch(path, options);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "请求失败");
+      return result;
+    }
+
+    function feedback(text, error = false) {
+      $("message").textContent = text;
+      $("message").dataset.error = String(error);
+    }
+
+    function refreshFields() {
+      const kind = $("condition").value;
+      const daily = kind === "daily";
+      const input = $("condition-value");
+      $("condition-field").hidden = kind === "webhook";
+      $("condition-label").textContent = daily ? "每天运行时间（Mac 本机时间）" : "来信手机号";
+      input.type = daily ? "time" : "tel";
+      input.required = kind !== "webhook";
+      input.placeholder = "+12025550147";
+      const [label, , example] = tasks[$("action").value];
+      $("task-label").textContent = label;
+      $("task-value").placeholder = example;
+    }
+
+    function renderList() {
+      const list = $("rules");
+      list.replaceChildren();
+      if (!rules.length) {
+        const empty = document.createElement("p");
+        empty.textContent = "还没有规则。保存第一条规则后，可以从这里启用。";
+        list.append(empty);
+      }
+      for (const rule of rules) {
+        const row = document.createElement("div");
+        row.className = "rule";
+        const title = document.createElement("div");
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "rule-name";
+        open.textContent = rule.name;
+        open.setAttribute("aria-current", String(editing === rule.name));
+        open.onclick = () => selectRule(rule);
+        const info = document.createElement("small");
+        info.textContent = conditions[rule.condition.type] + (rule.enabled ? " · 已启用" : " · 已停用");
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.textContent = rule.enabled ? "停用" : "启用";
+        toggle.setAttribute("aria-label", toggle.textContent + " " + rule.name);
+        toggle.onclick = async () => {
+          toggle.disabled = true;
+          try {
+            await request("/api/rules/" + rule.name, "PATCH", {enabled: !rule.enabled});
+            await load();
+            feedback(rule.enabled ? "规则已停用" : "规则已启用");
+          } catch (error) { feedback(error.message, true); }
+          finally { toggle.disabled = false; }
+        };
+        title.append(open, info);
+        row.append(title, toggle);
+        list.append(row);
+      }
+    }
+
+    function renderSaved() {
+      const rule = rules.find((item) => item.name === editing);
+      $("editor-title").textContent = rule ? "编辑规则" : "新建规则";
+      $("editor-state").textContent = rule ? (rule.enabled ? "已启用" : "已停用") : "未保存";
+      $("editor-state").dataset.enabled = String(Boolean(rule?.enabled));
+      $("event-info").hidden = !rule || rule.condition.type === "daily";
+      if (rule && rule.condition.type !== "daily") {
+        $("event-url").value = eventBase + "/" + rule.name;
+        $("event-help").textContent = rule.condition.type === "message"
+          ? "在 iPhone 快捷指令里选同一发件人。POST 时填写 event_id 和 sender，并带上访问令牌。"
+          : "快捷指令或脚本向这个地址发 POST，带上 event_id 和访问令牌。";
+      }
+    }
+
+    function selectRule(rule) {
+      editing = rule?.name ?? null;
+      $("rule-name").value = rule?.name ?? "";
+      $("rule-name").readOnly = Boolean(rule);
+      $("condition").value = rule?.condition.type ?? "webhook";
+      $("action").value = rule?.task.action ?? "app_snapshot";
+      refreshFields();
+      $("condition-value").value = rule?.condition.time ?? rule?.condition.sender ?? "";
+      $("task-value").value = rule?.task[tasks[$("action").value][1]] ?? "";
+      feedback("");
+      renderList();
+      renderSaved();
+    }
+
+    async function load() {
+      const data = await request("/api/rules");
+      rules = data.rules;
+      eventBase = data.event_base;
+      renderList();
+      renderSaved();
+    }
+
+    $("new-rule").onclick = () => { selectRule(null); $("rule-name").focus(); };
+    $("condition").onchange = () => { $("condition-value").value = ""; refreshFields(); };
+    $("action").onchange = () => { $("task-value").value = ""; refreshFields(); };
+    editor.onsubmit = async (event) => {
+      event.preventDefault();
+      const name = $("rule-name").value.trim();
+      const type = $("condition").value;
+      const condition = {type};
+      if (type !== "webhook") condition[type === "daily" ? "time" : "sender"] = $("condition-value").value;
+      const action = $("action").value;
+      const task = {action, [tasks[action][1]]: $("task-value").value};
+      $("save").disabled = true;
+      try {
+        await request(editing ? "/api/rules/" + editing : "/api/rules", editing ? "PUT" : "POST", {name, condition, task});
+        await load();
+        selectRule(rules.find((rule) => rule.name === name));
+        feedback("规则已保存");
+      } catch (error) { feedback(error.message, true); }
+      finally { $("save").disabled = false; }
+    };
+    $("copy-url").onclick = async () => {
+      try { await navigator.clipboard.writeText($("event-url").value); feedback("地址已复制"); }
+      catch (error) { feedback(error.message, true); }
+    };
+    $("copy-token").onclick = async () => {
+      try {
+        const {token} = await request("/api/token");
+        await navigator.clipboard.writeText(token);
+        feedback("访问令牌已复制");
+      } catch (error) { feedback(error.message, true); }
+    };
+    refreshFields();
+    load().catch((error) => feedback(error.message, true));
+  </script>
+</body>
+</html>

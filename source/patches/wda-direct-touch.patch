@@ -1,0 +1,68 @@
+diff --git a/WebDriverAgentLib/Commands/FBTouchActionCommands.m b/WebDriverAgentLib/Commands/FBTouchActionCommands.m
+index 7788175..96d693d 100644
+--- a/WebDriverAgentLib/Commands/FBTouchActionCommands.m
++++ b/WebDriverAgentLib/Commands/FBTouchActionCommands.m
+@@ -12,6 +12,11 @@
+ #import "FBRouteRequest.h"
+ #import "FBSession.h"
+ #import "XCUIApplication+FBTouchAction.h"
++#import "FBScreen.h"
++#import "FBXCTestDaemonsProxy.h"
++#import "XCPointerEventPath.h"
++#import "XCSynthesizedEventRecord.h"
++#import <math.h>
+ 
+ @implementation FBTouchActionCommands
+ 
+@@ -22,11 +27,51 @@
+   return
+   @[
+     [[FBRoute POST:@"/actions"] respondWithTarget:self action:@selector(handlePerformW3CTouchActions:)],
++#if !TARGET_OS_TV && !TARGET_OS_WATCH
++    [[FBRoute GET:@"/wda/tapScreenInfo"].withoutSession.standalone respondWithTarget:self action:@selector(handleTapScreenInfo:)],
++    [[FBRoute POST:@"/wda/tapScreen"] respondWithTarget:self action:@selector(handleTapScreen:)],
++#endif
+   ];
+ }
+ 
+ #pragma mark - Commands
+ 
++#if !TARGET_OS_TV && !TARGET_OS_WATCH
+++ (id<FBResponsePayload>)handleTapScreenInfo:(FBRouteRequest *)request
++{
++  return FBResponseWithObject(@{@"version": @1, @"coordinateSpace": @"screen-points",
++                                @"touchDuration": @0.125});
++}
++
+++ (id<FBResponsePayload>)handleTapScreen:(FBRouteRequest *)request
++{
++  NSNumber *x = request.arguments[@"x"];
++  NSNumber *y = request.arguments[@"y"];
++  if (![x isKindOfClass:NSNumber.class] || ![y isKindOfClass:NSNumber.class]
++      || !isfinite(x.doubleValue) || !isfinite(y.doubleValue)) {
++    return FBResponseWithStatus([FBCommandStatus invalidArgumentErrorWithMessage:@"Finite screen x/y are required" traceback:nil]);
++  }
++  // Coordinates and orientation come from the caller's screen observation.
++  // Do not resolve XCUIApplication, element.frame, or XCUICoordinate.screenPoint.
++  UIInterfaceOrientation orientation = request.arguments[@"orientation"]
++    ? [request.arguments[@"orientation"] integerValue] : UIInterfaceOrientationPortrait;
++  XCPointerEventPath *path = [[XCPointerEventPath alloc]
++                            initForTouchAtPoint:CGPointMake(x.doubleValue, y.doubleValue) offset:0];
++  [path liftUpAtOffset:0.125];
++  XCSynthesizedEventRecord *event = [XCSynthesizedEventRecord instancesRespondToSelector:@selector(initWithName:displayID:interfaceOrientation:)]
++    ? [[XCSynthesizedEventRecord alloc] initWithName:@"Direct screen tap"
++                                         displayID:(unsigned long long)[FBScreen displayID]
++                              interfaceOrientation:orientation]
++    : [[XCSynthesizedEventRecord alloc] initWithName:@"Direct screen tap" interfaceOrientation:orientation];
++  [event addPointerEventPath:path];
++  NSError *error = nil;
++  if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error]) {
++    return FBResponseWithUnknownError(error);
++  }
++  return FBResponseWithObject(@{@"actionExecuted": @YES, @"method": @"direct-screen-event"});
++}
++#endif
++
+ + (id<FBResponsePayload>)handlePerformW3CTouchActions:(FBRouteRequest *)request
+ {
+   XCUIApplication *application = request.session.activeApplication;
